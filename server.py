@@ -17,6 +17,8 @@ async def get_items():
         return r.json()
 
 app = mcp.http_app()
+print([r.path for r in app.routes])
+
 
 # Simple auth gate for all HTTP requests
 if MCP_API_KEY:
