@@ -4,8 +4,8 @@ from fastmcp import FastMCP
 
 mcp = FastMCP("MockAPI MCP")
 
-MOCKAPI_BASE_URL = os.environ["MOCKAPI_BASE_URL"]
-MCP_API_KEY = os.environ.get("MCP_API_KEY")  # optional but recommended
+MOCKAPI_BASE_URL = os.environ[https://697ea4fad1548030ab641c89.mockapi.io/weekly_digest_report]
+MCP_API_KEY = os.environ.get(test_key_456)  # optional but recommended
 
 @mcp.tool()
 async def get_items():
