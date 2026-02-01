@@ -6,22 +6,55 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route, Mount
 
-from mcp.server.fastmcp import FastMCP  # <-- official MCP SDK
+from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 
+# ----------------------------
+# Env
+# ----------------------------
 MOCKAPI_BASE_URL = os.environ.get("MOCKAPI_BASE_URL")
 if not MOCKAPI_BASE_URL:
     raise RuntimeError("Missing required env var: MOCKAPI_BASE_URL")
 
-MCP_API_KEY = os.environ.get("MCP_API_KEY")  # optional
+# Set this in Railway to your public hostname (no scheme, no path), e.g.:
+# RAILWAY_PUBLIC_DOMAIN = "my-service-production.up.railway.app"
+RAILWAY_PUBLIC_DOMAIN = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+
+# Optional (note: ChatGPT connector creation typically won't send this)
+MCP_API_KEY = os.environ.get("MCP_API_KEY")
 
 
-mcp = FastMCP("MockAPI MCP")
+# ----------------------------
+# MCP server with host allowlist (fixes "Invalid Host Header")
+# ----------------------------
+allowed_hosts = [
+    "localhost:*",
+    "127.0.0.1:*",
+    "healthcheck.railway.app:*",
+]
+allowed_origins = []
+
+if RAILWAY_PUBLIC_DOMAIN:
+    allowed_hosts.append(f"{RAILWAY_PUBLIC_DOMAIN}:*")
+    allowed_origins.append(f"https://{RAILWAY_PUBLIC_DOMAIN}")
+
+mcp = FastMCP(
+    "MockAPI MCP",
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=allowed_hosts,
+        allowed_origins=allowed_origins,
+    ),
+)
 
 
-# --- Tools (OpenAI connectors commonly expect search + fetch) ---
+# ----------------------------
+# Tools (ChatGPT connectors commonly expect search + fetch)
+# ----------------------------
 @mcp.tool()
 async def search(query: str):
+    # Minimal implementation: one "document" representing your MockAPI collection.
     results = [
         {
             "id": "mockapi-items",
@@ -68,8 +101,10 @@ async def get_items():
         return r.json()
 
 
-# --- ASGI apps ---
-mcp_sse_app = mcp.sse_app()  # provides /sse and /messages
+# ----------------------------
+# ASGI app: mount MCP SSE transport + add browser/health routes
+# ----------------------------
+mcp_sse_app = mcp.sse_app()  # provides /sse (text/event-stream) and /messages/*
 
 
 async def root(_request):
@@ -77,7 +112,8 @@ async def root(_request):
         {
             "ok": True,
             "mcp_sse": "/sse",
-            "note": "Use the /sse URL in ChatGPT Create App.",
+            "note": "Use https://<your-domain>/sse in ChatGPT Create App.",
+            "railway_public_domain_env": bool(RAILWAY_PUBLIC_DOMAIN),
         }
     )
 
@@ -95,21 +131,31 @@ app = Starlette(
 )
 
 
-# --- Optional API key middleware (do NOT block / and /health) ---
+# ----------------------------
+# Optional API key (do NOT block /, /health, /sse, /messages during connector creation)
+# ----------------------------
 if MCP_API_KEY:
     from starlette.middleware.base import BaseHTTPMiddleware
 
     class ApiKeyMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request, call_next):
-            if request.url.path in ("/", "/health", "/sse"):
+            # allow unauthenticated for health + connector bootstrapping paths
+            if request.url.path in ("/", "/health") or request.url.path.startswith(
+                ("/sse", "/messages")
+            ):
                 return await call_next(request)
+
             if request.headers.get("x-api-key") != MCP_API_KEY:
                 return JSONResponse({"error": "unauthorized"}, status_code=401)
+
             return await call_next(request)
 
     app.add_middleware(ApiKeyMiddleware)
 
 
+# ----------------------------
+# Local run
+# ----------------------------
 if __name__ == "__main__":
     import uvicorn
 
