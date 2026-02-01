@@ -2,27 +2,26 @@ import os
 import json
 import httpx
 
-from fastmcp import FastMCP
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route, Mount
+
+from mcp.server.fastmcp import FastMCP  # <-- official MCP SDK
+
 
 MOCKAPI_BASE_URL = os.environ.get("MOCKAPI_BASE_URL")
 if not MOCKAPI_BASE_URL:
     raise RuntimeError("Missing required env var: MOCKAPI_BASE_URL")
 
+MCP_API_KEY = os.environ.get("MCP_API_KEY")  # optional
+
+
 mcp = FastMCP("MockAPI MCP")
 
 
-# --- REQUIRED for ChatGPT connectors: search + fetch ---
+# --- Tools (OpenAI connectors commonly expect search + fetch) ---
 @mcp.tool()
 async def search(query: str):
-    """
-    Return search results.
-    OpenAI expects one content item with type 'text' containing JSON string:
-    {"results":[{"id","title","url"}]}
-    """
-    # Minimal: one synthetic "collection" result, plus you can add smarter matching later.
     results = [
         {
             "id": "mockapi-items",
@@ -30,20 +29,11 @@ async def search(query: str):
             "url": MOCKAPI_BASE_URL,
         }
     ]
-    return {
-        "content": [
-            {"type": "text", "text": json.dumps({"results": results})}
-        ]
-    }
+    return {"content": [{"type": "text", "text": json.dumps({"results": results})}]}
 
 
 @mcp.tool()
 async def fetch(id: str):
-    """
-    Return full contents for a search result.
-    OpenAI expects one content item with type 'text' containing JSON string:
-    {"id","title","text","url","metadata"(optional)}
-    """
     if id != "mockapi-items":
         doc = {
             "id": id,
@@ -69,7 +59,7 @@ async def fetch(id: str):
     return {"content": [{"type": "text", "text": json.dumps(doc)}]}
 
 
-# Optional extra tool (fine to keep)
+# Optional extra tool
 @mcp.tool()
 async def get_items():
     async with httpx.AsyncClient(timeout=15.0) as client:
@@ -78,26 +68,50 @@ async def get_items():
         return r.json()
 
 
-# --- SSE transport app (this is what ChatGPT is expecting) ---
-mcp_sse_app = mcp.sse_app()
+# --- ASGI apps ---
+mcp_sse_app = mcp.sse_app()  # provides /sse and /messages
 
-# Add normal HTTP routes for browser + Railway health
+
 async def root(_request):
     return JSONResponse(
         {
             "ok": True,
             "mcp_sse": "/sse",
-            "note": "Use the /sse URL in ChatGPT Create App (Developer Mode).",
+            "note": "Use the /sse URL in ChatGPT Create App.",
         }
     )
 
+
 async def health(_request):
     return JSONResponse({"status": "ok"})
+
 
 app = Starlette(
     routes=[
         Route("/", root, methods=["GET"]),
         Route("/health", health, methods=["GET"]),
-        Mount("/", app=mcp_sse_app),  # provides /sse and /messages/...
-    ],
+        Mount("/", app=mcp_sse_app),
+    ]
 )
+
+
+# --- Optional API key middleware (do NOT block / and /health) ---
+if MCP_API_KEY:
+    from starlette.middleware.base import BaseHTTPMiddleware
+
+    class ApiKeyMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            if request.url.path in ("/", "/health", "/sse"):
+                return await call_next(request)
+            if request.headers.get("x-api-key") != MCP_API_KEY:
+                return JSONResponse({"error": "unauthorized"}, status_code=401)
+            return await call_next(request)
+
+    app.add_middleware(ApiKeyMiddleware)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    port = int(os.environ.get("PORT", "8080"))
+    uvicorn.run(app, host="0.0.0.0", port=port)
