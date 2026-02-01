@@ -35,5 +35,8 @@ if MCP_API_KEY:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
+    port = int(os.environ.get("PORT", "8080"))
+    print(f"Listening on port {port}")
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
 
